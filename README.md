@@ -1,4 +1,4 @@
-# Rubber (0.1.0)
+# RubberMC (0.1.0)
 
 An experimental Rust-native Minecraft server project exploring compatibility with existing Fabric mods. It currently has a metadata inspector, Anvil-format world storage, and an early Java Edition 26.2 listener that supports server-list status/ping and the offline login-success exchange. Registry synchronization and world entry are not implemented, so players still cannot join a game.
 
