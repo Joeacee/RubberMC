@@ -1,4 +1,4 @@
-# RustFabric Prototype (0.1.0)
+# Rubber Prototype (0.1.0)
 
 An early Rust prototype for a future Rust-native Minecraft server with compatibility for existing Fabric mods.
 
