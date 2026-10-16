@@ -12,6 +12,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
 
+    if directory == "world" {
+        return world_command(args.collect());
+    }
+
     if directory == "serve" {
         let mut bind_address = "127.0.0.1:25565".to_string();
         while let Some(argument) = args.next() {
@@ -178,7 +182,7 @@ fn main() -> ExitCode {
                 issue_count
             );
             println!(
-                "STATUS: metadata prototype only; no Java execution, Fabric API bridge, Mixin transformation, or Minecraft server."
+                "STATUS: metadata inspection only; use 'rubber serve' for the experimental 26.2 listener."
             );
             if errors {
                 ExitCode::FAILURE
@@ -193,17 +197,169 @@ fn main() -> ExitCode {
     }
 }
 
+fn world_command(args: Vec<String>) -> ExitCode {
+    let invalid_usage = || {
+        eprintln!("error: invalid world command");
+        print_world_usage();
+        ExitCode::from(2)
+    };
+    match args.as_slice() {
+        [action, path, name] if action == "create" => {
+            match rubber::world::World::create(path, name) {
+                Ok(world) => {
+                    println!(
+                        "Created Anvil world '{}' at {}",
+                        name,
+                        world.path().display()
+                    );
+                    println!("No terrain chunks are generated; this is storage support, not a playable world.");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("world creation failed: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        [action, path] if action == "info" => {
+            match rubber::world::World::open(path) {
+                Ok(world) => {
+                    let name = world
+                        .level_data()
+                        .get("LevelName")
+                        .and_then(fastnbt::Value::as_str)
+                        .unwrap_or("(unnamed)");
+                    match world.region_file_count() {
+                        Ok(regions) => {
+                            println!("World: {name}");
+                            println!("Directory: {}", world.path().display());
+                            println!("Overworld region files: {regions}");
+                            println!("Stored chunks are opaque NBT; terrain generation is not implemented.");
+                            ExitCode::SUCCESS
+                        }
+                        Err(error) => {
+                            eprintln!("could not inspect world regions: {error}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("could not read world: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        [action, path, x, z, file] if action == "write-chunk" => {
+            let Some((chunk_x, chunk_z)) = parse_chunk_coordinates(x, z) else {
+                return invalid_usage();
+            };
+            let world = match rubber::world::World::open(path) {
+                Ok(world) => world,
+                Err(error) => {
+                    eprintln!("could not open world: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let nbt = match std::fs::read(file) {
+                Ok(nbt) => nbt,
+                Err(error) => {
+                    eprintln!("could not read chunk NBT file: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match world.write_chunk(chunk_x, chunk_z, &nbt) {
+                Ok(()) => {
+                    println!("Saved chunk ({chunk_x}, {chunk_z}) to the Anvil world.");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("could not save chunk: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        [action, path, x, z, file] if action == "read-chunk" => {
+            let Some((chunk_x, chunk_z)) = parse_chunk_coordinates(x, z) else {
+                return invalid_usage();
+            };
+            let world = match rubber::world::World::open(path) {
+                Ok(world) => world,
+                Err(error) => {
+                    eprintln!("could not open world: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match world.read_chunk(chunk_x, chunk_z) {
+                Ok(Some(nbt)) => match std::fs::write(file, nbt) {
+                    Ok(()) => {
+                        println!("Wrote chunk ({chunk_x}, {chunk_z}) NBT to {file}.");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => {
+                        eprintln!("could not write chunk NBT file: {error}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Ok(None) => {
+                    eprintln!("chunk ({chunk_x}, {chunk_z}) is not present in the world");
+                    ExitCode::FAILURE
+                }
+                Err(error) => {
+                    eprintln!("could not read chunk: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        [action, path, x, z] if action == "remove-chunk" => {
+            let Some((chunk_x, chunk_z)) = parse_chunk_coordinates(x, z) else {
+                return invalid_usage();
+            };
+            match rubber::world::World::open(path)
+                .and_then(|world| world.remove_chunk(chunk_x, chunk_z))
+            {
+                Ok(()) => {
+                    println!("Removed chunk ({chunk_x}, {chunk_z}) if it existed.");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("could not remove chunk: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => invalid_usage(),
+    }
+}
+
+fn parse_chunk_coordinates(x: &str, z: &str) -> Option<(i32, i32)> {
+    Some((x.parse().ok()?, z.parse().ok()?))
+}
+
 fn print_usage() {
     println!("Rubber v{}", env!("CARGO_PKG_VERSION"));
     println!("Usage: rubber <mods-directory> [--server]");
     println!("       rubber serve [--bind <address>]");
-    println!("Scans JAR metadata only; it does not execute Java mod code.");
+    println!("       rubber world <create|info|read-chunk|write-chunk|remove-chunk> ...");
+    println!(
+        "Scans JAR metadata, manages Anvil world storage, or starts the experimental listener."
+    );
     println!("Optional JNI proof of concept: rubber --java-poc <compiled-class-directory>");
+}
+
+fn print_world_usage() {
+    println!("Usage:");
+    println!("  rubber world create <world-directory> <name>");
+    println!("  rubber world info <world-directory>");
+    println!("  rubber world write-chunk <world-directory> <chunk-x> <chunk-z> <chunk.nbt>");
+    println!("  rubber world read-chunk <world-directory> <chunk-x> <chunk-z> <output.nbt>");
+    println!("  rubber world remove-chunk <world-directory> <chunk-x> <chunk-z>");
+    println!("Chunk files must contain an uncompressed NBT compound.");
 }
 
 fn print_server_usage() {
     println!("Usage: rubber serve [--bind <address>]");
-    println!("Starts the experimental Minecraft 26.2 status/ping listener.");
+    println!("Starts the experimental Minecraft 26.2 status and offline-login listener.");
     println!("Default bind address: 127.0.0.1:25565");
-    println!("Status/ping only; login and gameplay are not implemented.");
+    println!("Login succeeds only to the point of returning a configuration-phase disconnect.");
+    println!("Registry sync, world entry, authentication, and gameplay are not implemented.");
 }

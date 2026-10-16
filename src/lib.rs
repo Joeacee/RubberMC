@@ -8,6 +8,8 @@ use std::{
 };
 use zip::ZipArchive;
 
+pub mod world;
+
 const MAX_METADATA_SIZE: u64 = 1024 * 1024;
 const MAX_ARCHIVE_SIZE: u64 = 128 * 1024 * 1024;
 

@@ -7,6 +7,13 @@ use std::{
 const MINECRAFT_VERSION: &str = "26.2";
 const PROTOCOL_VERSION: i32 = 776;
 const MAX_PACKET_SIZE: usize = 1024 * 1024;
+const HANDSHAKE_STATUS: i32 = 1;
+const HANDSHAKE_LOGIN: i32 = 2;
+const LOGIN_START_PACKET: i32 = 0;
+const LOGIN_SUCCESS_PACKET: i32 = 2;
+const LOGIN_ACKNOWLEDGED_PACKET: i32 = 3;
+const LOGIN_DISCONNECT_PACKET: i32 = 0;
+const CONFIGURATION_DISCONNECT_PACKET: i32 = 2;
 
 pub fn serve(bind_address: &str) -> io::Result<()> {
     let listener = TcpListener::bind(bind_address)?;
@@ -14,7 +21,8 @@ pub fn serve(bind_address: &str) -> io::Result<()> {
         "Rubber 26.2 status server listening on {}",
         listener.local_addr()?
     );
-    println!("This build supports server-list status and ping only; gameplay is not implemented.");
+    println!("Server-list status and offline login are enabled; gameplay is not implemented.");
+    println!("Offline login does not authenticate account ownership.");
 
     for connection in listener.incoming() {
         match connection {
@@ -40,21 +48,23 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     if packet_id != 0 {
         return Err(invalid_data("expected handshake packet"));
     }
-    let _client_protocol = read_varint(&handshake, &mut cursor)?;
+    let client_protocol = read_varint(&handshake, &mut cursor)?;
     let _server_address = read_string(&handshake, &mut cursor)?;
     read_exact(&handshake, &mut cursor, 2)?;
     let next_state = read_varint(&handshake, &mut cursor)?;
     if cursor != handshake.len() {
         return Err(invalid_data("unexpected trailing bytes in handshake"));
     }
-    if next_state != 1 {
-        return Err(invalid_data(
-            "login is not implemented; only status handshakes are supported",
-        ));
+    match next_state {
+        HANDSHAKE_STATUS => handle_status(&mut stream),
+        HANDSHAKE_LOGIN => handle_login(&mut stream, client_protocol),
+        _ => Err(invalid_data("unsupported handshake next state")),
     }
+}
 
+fn handle_status(stream: &mut TcpStream) -> io::Result<()> {
     loop {
-        let frame = match read_frame(&mut stream) {
+        let frame = match read_frame(stream) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error),
@@ -64,13 +74,13 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
         match packet_id {
             0 if cursor == frame.len() => {
                 let response = status_response();
-                write_packet(&mut stream, 0, response.as_bytes())?;
+                write_packet(stream, 0, response.as_bytes())?;
             }
             1 if frame.len() - cursor == 8 => {
                 let mut pong_payload = Vec::with_capacity(9);
                 write_varint(1, &mut pong_payload);
                 pong_payload.extend_from_slice(&frame[cursor..]);
-                write_frame(&mut stream, &pong_payload)?;
+                write_frame(stream, &pong_payload)?;
                 return Ok(());
             }
             0 => return Err(invalid_data("status request packet must be empty")),
@@ -78,6 +88,84 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
             _ => return Err(invalid_data("unknown status packet")),
         }
     }
+}
+
+fn handle_login(stream: &mut TcpStream, client_protocol: i32) -> io::Result<()> {
+    if client_protocol != PROTOCOL_VERSION {
+        return write_login_disconnect(
+            stream,
+            &format!(
+                "This Rubber development build requires Minecraft {MINECRAFT_VERSION} (protocol {PROTOCOL_VERSION}); received protocol {client_protocol}."
+            ),
+        );
+    }
+
+    let login_start = read_frame(stream)?;
+    let mut cursor = 0;
+    if read_varint(&login_start, &mut cursor)? != LOGIN_START_PACKET {
+        return write_login_disconnect(stream, "Expected a login-start packet.");
+    }
+    let username = match read_bounded_string(&login_start, &mut cursor, 16) {
+        Ok(username) => username,
+        Err(_) => return write_login_disconnect(stream, "Invalid player name."),
+    };
+    if !valid_username(&username) {
+        return write_login_disconnect(
+            stream,
+            "Player names must be 3-16 ASCII letters, digits, or underscores.",
+        );
+    }
+    let uuid_bytes = match read_exact(&login_start, &mut cursor, 16) {
+        Ok(bytes) => bytes,
+        Err(_) => return write_login_disconnect(stream, "Invalid login-start UUID."),
+    };
+    if cursor != login_start.len() {
+        return write_login_disconnect(stream, "Unexpected data in login-start packet.");
+    }
+
+    let mut login_success = Vec::with_capacity(username.len() + 40);
+    write_varint(LOGIN_SUCCESS_PACKET, &mut login_success);
+    login_success.extend_from_slice(uuid_bytes);
+    write_string(username.as_bytes(), &mut login_success)?;
+    write_varint(0, &mut login_success);
+    login_success.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    write_frame(stream, &login_success)?;
+
+    let acknowledgement = read_frame(stream)?;
+    let mut cursor = 0;
+    if read_varint(&acknowledgement, &mut cursor)? != LOGIN_ACKNOWLEDGED_PACKET
+        || cursor != acknowledgement.len()
+    {
+        return write_login_disconnect(stream, "Expected login acknowledgement.");
+    }
+
+    eprintln!(
+        "Offline login completed for '{username}'; rejecting before configuration because 26.2 registries and world entry are not implemented."
+    );
+    write_configuration_disconnect(
+        stream,
+        "Rubber accepted the offline login, but world entry is not implemented yet.",
+    )
+}
+
+fn write_login_disconnect(stream: &mut TcpStream, message: &str) -> io::Result<()> {
+    write_disconnect(stream, LOGIN_DISCONNECT_PACKET, message)
+}
+
+fn write_configuration_disconnect(stream: &mut TcpStream, message: &str) -> io::Result<()> {
+    write_disconnect(stream, CONFIGURATION_DISCONNECT_PACKET, message)
+}
+
+fn write_disconnect(stream: &mut TcpStream, packet_id: i32, message: &str) -> io::Result<()> {
+    let component = serde_json::json!({ "text": message }).to_string();
+    write_packet(stream, packet_id, component.as_bytes())
+}
+
+fn valid_username(username: &str) -> bool {
+    (3..=16).contains(&username.len())
+        && username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn status_response() -> String {
@@ -171,9 +259,13 @@ fn write_varint(value: i32, output: &mut Vec<u8>) {
 }
 
 fn read_string(bytes: &[u8], cursor: &mut usize) -> io::Result<String> {
+    read_bounded_string(bytes, cursor, 255)
+}
+
+fn read_bounded_string(bytes: &[u8], cursor: &mut usize, max_length: usize) -> io::Result<String> {
     let length = read_varint(bytes, cursor)?;
-    if length < 0 || length as usize > 255 {
-        return Err(invalid_data("handshake server address exceeds 255 bytes"));
+    if length < 0 || length as usize > max_length {
+        return Err(invalid_data("protocol string exceeds its byte limit"));
     }
     let content = read_exact(bytes, cursor, length as usize)?;
     String::from_utf8(content.to_vec()).map_err(|_| invalid_data("server address is not UTF-8"))
@@ -206,23 +298,30 @@ mod tests {
     use super::*;
     use std::{io::Read, net::TcpListener};
 
-    #[test]
-    fn status_ping_returns_supported_version_and_echoes_ping() {
+    fn spawn_test_server() -> (TcpStream, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             handle_connection(stream).unwrap();
         });
-        let mut client = TcpStream::connect(address).unwrap();
+        (TcpStream::connect(address).unwrap(), server)
+    }
 
+    fn send_handshake(client: &mut TcpStream, next_state: i32, protocol: i32) {
         let mut handshake = Vec::new();
         write_varint(0, &mut handshake);
-        write_varint(PROTOCOL_VERSION, &mut handshake);
+        write_varint(protocol, &mut handshake);
         write_string(b"localhost", &mut handshake).unwrap();
         handshake.extend_from_slice(&25565u16.to_be_bytes());
-        write_varint(1, &mut handshake);
-        write_frame(&mut client, &handshake).unwrap();
+        write_varint(next_state, &mut handshake);
+        write_frame(client, &handshake).unwrap();
+    }
+
+    #[test]
+    fn status_ping_returns_supported_version_and_echoes_ping() {
+        let (mut client, server) = spawn_test_server();
+        send_handshake(&mut client, HANDSHAKE_STATUS, PROTOCOL_VERSION);
 
         let mut status_request = Vec::new();
         write_varint(0, &mut status_request);
@@ -250,6 +349,71 @@ mod tests {
             i64::from_be_bytes(pong_frame[cursor..].try_into().unwrap()),
             ping_value
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn offline_login_succeeds_then_disconnects_with_configuration_limit() {
+        let (mut client, server) = spawn_test_server();
+        send_handshake(&mut client, HANDSHAKE_LOGIN, PROTOCOL_VERSION);
+
+        let mut login_start = Vec::new();
+        write_varint(LOGIN_START_PACKET, &mut login_start);
+        write_string(b"RubberUser", &mut login_start).unwrap();
+        login_start.extend_from_slice(uuid::Uuid::nil().as_bytes());
+        write_frame(&mut client, &login_start).unwrap();
+
+        let login_success = read_test_frame(&mut client);
+        let mut cursor = 0;
+        assert_eq!(
+            read_varint(&login_success, &mut cursor).unwrap(),
+            LOGIN_SUCCESS_PACKET
+        );
+        assert_eq!(
+            login_success[cursor..cursor + 16],
+            *uuid::Uuid::nil().as_bytes()
+        );
+        cursor += 16;
+        assert_eq!(
+            read_bounded_string(&login_success, &mut cursor, 16).unwrap(),
+            "RubberUser"
+        );
+        assert_eq!(read_varint(&login_success, &mut cursor).unwrap(), 0);
+        assert_eq!(login_success.len() - cursor, 16);
+
+        let mut acknowledgement = Vec::new();
+        write_varint(LOGIN_ACKNOWLEDGED_PACKET, &mut acknowledgement);
+        write_frame(&mut client, &acknowledgement).unwrap();
+        let disconnect = read_test_frame(&mut client);
+        let mut cursor = 0;
+        assert_eq!(
+            read_varint(&disconnect, &mut cursor).unwrap(),
+            CONFIGURATION_DISCONNECT_PACKET
+        );
+        let reason_length = read_varint(&disconnect, &mut cursor).unwrap() as usize;
+        let reason: serde_json::Value =
+            serde_json::from_slice(&disconnect[cursor..cursor + reason_length]).unwrap();
+        assert!(reason["text"]
+            .as_str()
+            .unwrap()
+            .contains("world entry is not implemented"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn login_rejects_wrong_protocol_before_reading_login_start() {
+        let (mut client, server) = spawn_test_server();
+        send_handshake(&mut client, HANDSHAKE_LOGIN, PROTOCOL_VERSION - 1);
+        let disconnect = read_test_frame(&mut client);
+        let mut cursor = 0;
+        assert_eq!(
+            read_varint(&disconnect, &mut cursor).unwrap(),
+            LOGIN_DISCONNECT_PACKET
+        );
+        let reason_length = read_varint(&disconnect, &mut cursor).unwrap() as usize;
+        let reason: serde_json::Value =
+            serde_json::from_slice(&disconnect[cursor..cursor + reason_length]).unwrap();
+        assert!(reason["text"].as_str().unwrap().contains("protocol 776"));
         server.join().unwrap();
     }
 
