@@ -17,7 +17,7 @@ An experimental Rust-native Minecraft server project exploring compatibility wit
 
 ## What it does NOT do
 
-This is not a playable Minecraft server or a replacement for Fabric Loader yet. The listener accepts offline logins, but does not authenticate accounts. It deliberately disconnects in the configuration phase because registry synchronization and world entry are not implemented. Terrain generation, chunk delivery to clients, movement, block interaction, ticking, and game-integrated persistence are also missing. The Anvil storage API writes caller-provided NBT compounds to region files, but does not generate or validate version-specific Minecraft chunk contents. Newly created worlds are minimal storage containers, not initialized vanilla 26.2 worlds; they have no generated terrain and are not verified to open in a Minecraft client. It does **not** execute mod entrypoints, recursively discover nested JARs, apply access wideners, run Mixins, or implement Fabric APIs. Dependency predicates support Fabric-style exact versions, comparison operators, `~`, `^`, trailing `.x`/`.X` wildcards, conjunctions separated by spaces, and arrays of alternative predicates; the scanner does not claim complete Fabric version compatibility. In particular, Java mods cannot run merely because their metadata can be parsed.
+This is not a playable Minecraft server or a replacement for Fabric Loader yet. The listener accepts offline logins, but does not authenticate accounts. It deliberately disconnects in the configuration phase because registry synchronization and world entry are not implemented. Terrain generation, chunk delivery to clients, movement, block interaction, ticking, and game-integrated persistence are also missing. New worlds include 26.2 data-version metadata and overworld/nether/end generator settings, but no terrain is generated and the world has not been validated by a Minecraft client. The Anvil storage API writes caller-provided NBT compounds to region files, but does not validate version-specific chunk contents. It does **not** execute mod entrypoints, recursively discover nested JARs, apply access wideners, run Mixins, or implement Fabric APIs. Dependency predicates support Fabric-style exact versions, comparison operators, `~`, `^`, trailing `.x`/`.X` wildcards, conjunctions separated by spaces, and arrays of alternative predicates; the scanner does not claim complete Fabric version compatibility. In particular, Java mods cannot run merely because their metadata can be parsed.
 
 The intended Minecraft target is Java Edition 26.2. Protocol support is currently limited to server-list status/ping and the login-success exchange; no real-client session or gameplay compatibility has been verified. The included JARs are synthetic fixtures; no real mods have been validated.
 
@@ -47,7 +47,7 @@ The directory should contain the `.jar` files you want to inspect. This command 
 
 ## Anvil world storage
 
-The `rubber::world::World` API and the CLI can create a minimal Anvil-format directory, read and save its `level.dat` NBT metadata, and read, write, or remove chunk NBT in standard `.mca` region files. Chunk coordinates are world chunk coordinates (not block coordinates); the CLI expects each chunk file to contain an uncompressed NBT compound.
+The `rubber::world::World` API and the CLI can create an Anvil-format directory with Java 26.2 version metadata and dimension generator settings, read and save its `level.dat` NBT metadata, and read, write, or remove chunk NBT in standard `.mca` region files. Chunk coordinates are world chunk coordinates (not block coordinates); the CLI expects each chunk file to contain an uncompressed NBT compound.
 
 ```powershell
 cargo run -- world create "C:\rubber-worlds\test" "Test World"
@@ -57,7 +57,7 @@ cargo run -- world read-chunk "C:\rubber-worlds\test" 0 0 saved-chunk.nbt
 cargo run -- world remove-chunk "C:\rubber-worlds\test" 0 0
 ```
 
-`world create` will not overwrite an existing directory. `level.dat` is gzip-compressed NBT and keeps an older copy as `level.dat_old` when saved again. This is a storage foundation only: Rubber does not yet generate terrain, populate the data required for a complete Java 26.2 world, or connect persisted chunks to the network server. Do not treat a created world as ready to open in Minecraft.
+`world create` will not overwrite an existing directory. `level.dat` and `data/minecraft/world_gen_settings.dat` are gzip-compressed NBT; saving `level.dat` keeps an older copy as `level.dat_old`. This is a storage foundation only: Rubber does not yet generate terrain, validate chunk NBT against 26.2, or connect persisted chunks to the network server. Client compatibility has not been tested; do not treat a created world as playable.
 
 ## Experimental server listener
 
@@ -88,7 +88,7 @@ If JVM discovery fails or selects an unexpected installation on Windows, set `$e
 ## Suggested next milestones
 
 1. Implement the 26.2 configuration phase and required dynamic registry exchange.
-2. Generate valid 26.2 level metadata, dimension data, and terrain chunks, then connect storage to world entry.
+2. Generate valid 26.2 terrain chunks, then connect persisted storage to world entry.
 3. Add movement, block interactions, ticking, and game-integrated persistence before calling it playable.
 4. Extend the JVM experiment to evaluate classloader isolation and JVM lifecycle on supported platforms.
 5. Investigate Fabric Loader and Mixin requirements before loading real mods.
