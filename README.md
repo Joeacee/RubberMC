@@ -1,6 +1,6 @@
 # RubberMC (0.1.0)
 
-An experimental Rust-native Minecraft server project exploring compatibility with existing Fabric mods. It currently has a metadata inspector, Anvil-format world storage, and an early Java Edition 26.2 listener that supports server-list status/ping and the offline login-success exchange. Registry synchronization and world entry are not implemented, so players still cannot join a game.
+An experimental Rust-native Minecraft server project exploring compatibility with existing Fabric mods. It currently has a metadata inspector, Anvil-format world storage, and an early Java Edition 26.2 listener that synchronizes registries and initializes an offline client into a minimal one-chunk world. This is a join-path prototype, not a playable server.
 
 ## What it does now
 
@@ -12,14 +12,15 @@ An experimental Rust-native Minecraft server project exploring compatibility wit
 - Detects duplicate mod IDs, missing required dependencies, and required dependency version mismatches.
 - Reports missing recommendations/suggestions and applicable conflicts/breakages.
 - Rejects JARs over 128 MiB and bounds decompressed metadata reads to 1 MiB per JAR.
-- Serves Java Edition 26.2 (protocol 776) status and ping, validates offline login starts, and returns login success before explicitly disconnecting in the configuration phase.
+- Serves Java Edition 26.2 (protocol 776) status and ping, validates offline login starts, negotiates known packs, synchronizes generated registries and tags, and enters the play state.
+- Sends a single initial chunk with a small stone platform, a spawn position, and teleport/keepalive handling so the client can initialize a world session.
 - Creates Anvil-style world directories with gzip-compressed `level.dat`, reads and saves level metadata, and reads, writes, and removes chunk NBT in `.mca` region files.
 
 ## What it does NOT do
 
-This is not a playable Minecraft server or a replacement for Fabric Loader yet. The listener accepts offline logins, but does not authenticate accounts. It deliberately disconnects in the configuration phase because registry synchronization and world entry are not implemented. Terrain generation, chunk delivery to clients, movement, block interaction, ticking, and game-integrated persistence are also missing. New worlds include 26.2 data-version metadata and overworld/nether/end generator settings, but no terrain is generated and the world has not been validated by a Minecraft client. The Anvil storage API writes caller-provided NBT compounds to region files, but does not validate version-specific chunk contents. It does **not** execute mod entrypoints, recursively discover nested JARs, apply access wideners, run Mixins, or implement Fabric APIs. Dependency predicates support Fabric-style exact versions, comparison operators, `~`, `^`, trailing `.x`/`.X` wildcards, conjunctions separated by spaces, and arrays of alternative predicates; the scanner does not claim complete Fabric version compatibility. In particular, Java mods cannot run merely because their metadata can be parsed.
+This is not a playable Minecraft server or a replacement for Fabric Loader yet. The listener accepts offline logins, but does not authenticate accounts. The one-chunk platform is a protocol smoke-world only: movement, block interaction, terrain generation, chunk streaming, ticking, and game-integrated persistence are not implemented. The Anvil storage API is still separate from the network server; new worlds include 26.2 data-version metadata and overworld/nether/end generator settings, but no terrain is generated. No real client has yet been used to validate the join path. The Anvil storage API writes caller-provided NBT compounds to region files, but does not validate version-specific chunk contents. It does **not** execute mod entrypoints, recursively discover nested JARs, apply access wideners, run Mixins, or implement Fabric APIs. Dependency predicates support Fabric-style exact versions, comparison operators, `~`, `^`, trailing `.x`/`.X` wildcards, conjunctions separated by spaces, and arrays of alternative predicates; the scanner does not claim complete Fabric version compatibility. In particular, Java mods cannot run merely because their metadata can be parsed.
 
-The intended Minecraft target is Java Edition 26.2. Protocol support is currently limited to server-list status/ping and the login-success exchange; no real-client session or gameplay compatibility has been verified. The included JARs are synthetic fixtures; no real mods have been validated.
+The intended Minecraft target is Java Edition 26.2. A raw-TCP regression test exercises the status, offline login, registry configuration, and initial play packets, but no real-client session or gameplay compatibility has been verified. The included JARs are synthetic fixtures; no real mods have been validated.
 
 ## Build
 
@@ -67,7 +68,7 @@ Start the development endpoint (bound to loopback by default):
 cargo run -- serve
 ```
 
-Add `localhost:25565` in a Java Edition 26.2 client's multiplayer server list. Selecting the server will get past the offline login-success exchange, then show an explicit disconnect because configuration registry data and world entry are not yet available. This is **not playable**.
+Add `localhost:25565` in a Java Edition 26.2 client's multiplayer server list. The server attempts the configuration exchange and initializes a one-chunk stone-platform world. This join path has not been validated with a real client, and the world is not playable yet: movement and block interactions are ignored, and the chunk is not backed by Anvil storage.
 
 This listener is offline-mode only: it does not contact Mojang or verify account ownership, and usernames/UUIDs are not authenticated. Keep it on loopback; do not expose it to untrusted networks. To bind a different address, pass `--bind`, for example `cargo run -- serve --bind 0.0.0.0:25565`. Binding publicly does not enable authentication.
 
@@ -87,9 +88,9 @@ If JVM discovery fails or selects an unexpected installation on Windows, set `$e
 
 ## Suggested next milestones
 
-1. Implement the 26.2 configuration phase and required dynamic registry exchange.
-2. Generate valid 26.2 terrain chunks, then connect persisted storage to world entry.
-3. Add movement, block interactions, ticking, and game-integrated persistence before calling it playable.
+1. Validate the join path with a real Java Edition 26.2 client.
+2. Generate terrain chunks and connect Anvil storage to world loading and saving.
+3. Add movement, block interactions, ticking, and multiplayer state before calling it playable.
 4. Extend the JVM experiment to evaluate classloader isolation and JVM lifecycle on supported platforms.
 5. Investigate Fabric Loader and Mixin requirements before loading real mods.
 6. Expand metadata checks against real Fabric mods and inspect nested JARs safely.

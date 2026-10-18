@@ -358,8 +358,9 @@ fn print_world_usage() {
 
 fn print_server_usage() {
     println!("Usage: rubber serve [--bind <address>]");
-    println!("Starts the experimental Minecraft 26.2 status and offline-login listener.");
+    println!(
+        "Starts the experimental Minecraft 26.2 server with a minimal single-chunk join world."
+    );
     println!("Default bind address: 127.0.0.1:25565");
-    println!("Login succeeds only to the point of returning a configuration-phase disconnect.");
-    println!("Registry sync, world entry, authentication, and gameplay are not implemented.");
+    println!("Offline login does not authenticate accounts; movement and block interaction are not implemented.");
 }
